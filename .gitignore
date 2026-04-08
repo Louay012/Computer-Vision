@@ -1,0 +1,56 @@
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and local settings
+*.log
+.env
+.env.*
+
+# Model artifacts and checkpoints
+models/*.pt
+models/*.pth
+models/*.ckpt
+models/*.onnx
+models/*.h5
+models/*.pkl
+models/*.joblib
+
+# Experiment outputs
+results/**
+!results/.gitkeep
+
+# Datasets and generated data
+data/**
+!data/.gitkeep
+!data/**/.gitkeep
+
+# Keep requirements generated locally out of git if auto-frozen each setup run
+# Remove this line if you want to track requirements.txt manually.
+# requirements.txt
