@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from src.features import extract_features
 
 
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -48,6 +49,22 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed for histogram sample selection. Default: 42.",
     )
+    parser.add_argument(
+        "--extract-features",
+        action="store_true",
+        help="Compute and save features (color, texture, shape) for each image.",
+    )
+    parser.add_argument(
+        "--features-dir",
+        type=Path,
+        default=None,
+        help="Directory to store extracted feature files. Default: <output-dir>/features",
+    )
+    parser.add_argument(
+        "--auto-mask",
+        action="store_true",
+        help="Automatically generate a binary mask (Otsu) to compute shape features.",
+    )
     return parser.parse_args()
 
 
@@ -75,6 +92,23 @@ def convert_color(image_bgr: np.ndarray, color_mode: str) -> np.ndarray:
     if color_mode == "gray":
         return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     raise ValueError(f"Unsupported color mode: {color_mode}")
+
+
+def generate_auto_mask_from_bgr(image_bgr: np.ndarray) -> np.ndarray:
+    """Quick auto-mask using grayscale Otsu threshold and morphological closing.
+
+    Returns a boolean mask (HxW) where True indicates foreground.
+    """
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # ensure foreground is white; if background is white, invert
+    # heuristic: check mean intensity of mask
+    if th.mean() > 127:
+        th = cv2.bitwise_not(th)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    closed = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+    return closed.astype(bool)
 
 
 def save_output_image(image: np.ndarray, output_path: Path, color_mode: str) -> None:
@@ -134,6 +168,11 @@ def main() -> None:
     histogram_samples = set(np.random.choice(len(image_paths), size=min(args.hist_samples, len(image_paths)), replace=False))
 
     processed_count = 0
+    features_saved = 0
+    features_out_dir: Path | None = None
+    if args.extract_features:
+        features_out_dir = args.features_dir.resolve() if args.features_dir is not None else output_dir / "features"
+        features_out_dir.mkdir(parents=True, exist_ok=True)
     failed_files: list[str] = []
 
     for index, image_path in enumerate(image_paths):
@@ -152,6 +191,32 @@ def main() -> None:
         save_output_image(image_processed, output_path, args.color_mode)
         processed_count += 1
 
+        if args.extract_features:
+            # ensure we compute features on RGB image regardless of output color mode
+            rgb_img = convert_color(image_bgr, "rgb")
+            mask = None
+            if args.auto_mask:
+                mask = generate_auto_mask_from_bgr(image_bgr)
+            try:
+                vector, details = extract_features(rgb_img, mask=mask)
+                feat_path = (features_out_dir / relative_path).with_suffix(".json")
+                feat_path.parent.mkdir(parents=True, exist_ok=True)
+                feat_json = {
+                    "image": str(relative_path),
+                    "vector": vector.tolist(),
+                    "details": {
+                        "rgb_hist": details["rgb_hist"].tolist(),
+                        "hsv_hist": details["hsv_hist"].tolist(),
+                        "glcm": details["glcm"],
+                        "shape": details["shape"],
+                    },
+                }
+                feat_path.write_text(json.dumps(feat_json, indent=2), encoding="utf-8")
+                features_saved += 1
+            except Exception as e:
+                failed_files.append(str(relative_path))
+                print(f"Feature extraction failed for {relative_path}: {e}")
+
         if index in histogram_samples:
             hist_name = output_path.stem + "_hist.png"
             hist_path = output_dir / "histograms" / hist_name
@@ -168,6 +233,9 @@ def main() -> None:
         "images_failed": len(failed_files),
         "failed_files": failed_files,
     }
+    if args.extract_features:
+        report["features_saved"] = features_saved
+        report["features_dir"] = str(features_out_dir)
 
     report_path = output_dir / "preprocessing_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
