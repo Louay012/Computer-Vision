@@ -1,171 +1,122 @@
-"""Feature extraction helpers: couleur, texture (GLCM), forme.
+"""Feature extraction helpers used by the ML pipeline.
 
-Fonctions principales:
-- color_histogram_rgb / color_histogram_hsv: histogrammes normalisés
-- glcm_features: propriétés GLCM (contrast, homogeneity, energy, ...)
-- shape_features: surface, périmètre, circularité (sur un masque binaire)
-- extract_features: wrapper qui concatène les features
+Exports `extract_features(rgb, mask=None)` which returns (vec, details).
+The returned vector matches the columns in `results/combined_run/features/features.csv`:
+  [h_mean,s_mean,v_mean,h_std,s_std,v_std,contrast,energy,homogeneity,area,perimeter,circularity]
 
-Assume les images en format RGB (uint8) pour les entrées courantes.
+This is a lightweight implementation intended to be compatible with the project's
+existing CSV features and classical models.
 """
-from __future__ import annotations
-
-from typing import Dict, List, Optional, Tuple
-
-import cv2
+from typing import Tuple, Dict
 import numpy as np
+import cv2
 
-# Import GLCM functions from scikit-image with compatibility across versions
 try:
-    # modern/US-spelling exports
-    from skimage.feature import graycomatrix as greycomatrix, graycoprops as greycoprops
+    from skimage.feature import greycomatrix, greycoprops
+    from skimage import img_as_ubyte
+    _HAS_SKIMAGE = True
 except Exception:
+    _HAS_SKIMAGE = False
+
+from .preprocessing import generate_auto_mask_from_bgr
+
+
+def _texture_props(gray: np.ndarray) -> Tuple[float, float, float]:
+    # Compute simple GLCM texture features (contrast, energy, homogeneity)
+    # Fallback to simple statistics if skimage is not available.
     try:
-        # older/british-spelling exports
-        from skimage.feature import greycomatrix, greycoprops
+        if not _HAS_SKIMAGE:
+            raise ImportError
+        # quantize to 64 levels for speed
+        gray_u8 = img_as_ubyte(gray)
+        levels = 64
+        # rescale to the levels
+        bins = np.linspace(0, 256, levels + 1)
+        gray_q = np.digitize(gray_u8, bins) - 1
+        gray_q = (gray_q * (255 // (levels - 1))).astype('uint8')
+        glcm = greycomatrix(gray_q, distances=[1], angles=[0], levels=levels, symmetric=True, normed=True)
+        contrast = float(greycoprops(glcm, 'contrast')[0, 0])
+        energy = float(greycoprops(glcm, 'energy')[0, 0])
+        homogeneity = float(greycoprops(glcm, 'homogeneity')[0, 0])
+        return contrast, energy, homogeneity
     except Exception:
-        # attempt submodule path
-        from skimage.feature.texture import greycomatrix, greycoprops
+        # Fallback: use variance, inverse variance and normalized Laplacian energy
+        contrast = float(np.var(gray.astype('float32')))
+        # energy ~ sum of squared normalized histogram
+        hist = cv2.calcHist([gray], [0], None, [32], [0, 256]).ravel()
+        hist = hist / (hist.sum() + 1e-9)
+        energy = float(np.sum(hist ** 2))
+        homogeneity = float(1.0 / (1.0 + contrast))
+        return contrast, energy, homogeneity
 
 
-def _to_uint8(img: np.ndarray) -> np.ndarray:
-    if img.dtype == np.uint8:
-        return img
-    if np.issubdtype(img.dtype, np.floating):
-        arr = np.clip(img, 0.0, 1.0) * 255.0
-        return arr.astype(np.uint8)
-    # other integer types: scale down if necessary
-    info = np.iinfo(img.dtype)
-    if info.max <= 255:
-        return img.astype(np.uint8)
-    return ((img.astype(np.float32) / info.max) * 255.0).astype(np.uint8)
+def extract_features(rgb: np.ndarray, mask: np.ndarray = None) -> Tuple[np.ndarray, Dict]:
+    """Extract a compact feature vector from an RGB image.
 
+    Parameters
+    - rgb: HxWx3 uint8 RGB image (0-255)
+    - mask: optional HxW uint8 mask (0 or 255) where 255 indicates foreground.
 
-def color_histogram_rgb(image: np.ndarray, bins: int = 32, mask: Optional[np.ndarray] = None, normalize: bool = True) -> np.ndarray:
-    """Return a concatenated RGB histogram vector (R,G,B).
-
-    image: RGB uint8 image (H,W,3)
-    mask: optional binary mask (same HxW) to compute hist over object
+    Returns (vec, details) where vec is a 1D numpy array matching the project's
+    features CSV, and details is a dict with extra values (mask, shape stats).
     """
-    img = _to_uint8(image)
-    chans = cv2.split(img)
-    feats: List[np.ndarray] = []
-    for ch in chans:
-        if mask is not None:
-            vals = ch[mask.astype(bool)]
-            hist, _ = np.histogram(vals, bins=bins, range=(0, 256))
-        else:
-            hist, _ = np.histogram(ch, bins=bins, range=(0, 256))
-        hist = hist.astype(np.float32)
-        if normalize:
-            s = hist.sum()
-            if s > 0:
-                hist /= s
-        feats.append(hist)
-    return np.concatenate(feats)
+    if rgb is None:
+        raise ValueError('rgb is None')
+    if rgb.dtype != np.uint8:
+        rgb = (np.clip(rgb, 0, 1) * 255).astype('uint8') if rgb.max() <= 1.0 else rgb.astype('uint8')
 
-
-def color_histogram_hsv(image: np.ndarray, bins: int = 32, mask: Optional[np.ndarray] = None, normalize: bool = True) -> np.ndarray:
-    """Return a concatenated HSV histogram vector (H,S,V).
-
-    Assumes input `image` is RGB; conversion to HSV est faite en interne.
-    """
-    img = _to_uint8(image)
-    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-    feats: List[np.ndarray] = []
-    for ch in cv2.split(hsv):
-        if mask is not None:
-            vals = ch[mask.astype(bool)]
-            hist, _ = np.histogram(vals, bins=bins, range=(0, 256))
-        else:
-            hist, _ = np.histogram(ch, bins=bins, range=(0, 256))
-        hist = hist.astype(np.float32)
-        if normalize:
-            s = hist.sum()
-            if s > 0:
-                hist /= s
-        feats.append(hist)
-    return np.concatenate(feats)
-
-
-def glcm_features(image: np.ndarray, distances: List[int] = [1], angles: List[float] = [0.0], levels: int = 8, properties: Optional[List[str]] = None, mask: Optional[np.ndarray] = None) -> Dict[str, float]:
-    """Compute a set of GLCM texture properties on the grayscale image.
-
-    Returns a dict with keys = properties and scalar values (mean over distances/angles).
-    """
-    if properties is None:
-        properties = ["contrast", "dissimilarity", "homogeneity", "energy", "correlation", "ASM"]
-
-    img = _to_uint8(image)
-    if img.ndim == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    else:
-        gray = img
-
-    if mask is not None:
-        gray = gray.copy()
-        gray[~mask.astype(bool)] = 0
-
-    # Quantize to `levels` gray levels required by skimage.greycomatrix
-    gray_q = np.floor((gray.astype(np.float32) * (levels - 1) / 255.0)).astype(np.uint8)
-
-    glcm = greycomatrix(gray_q, distances=distances, angles=angles, levels=levels, symmetric=True, normed=True)
-    feat_vals: Dict[str, float] = {}
-    for prop in properties:
-        try:
-            vals = greycoprops(glcm, prop)
-            feat_vals[prop] = float(np.nanmean(vals))
-        except Exception:
-            feat_vals[prop] = float("nan")
-    return feat_vals
-
-
-def shape_features(mask: np.ndarray) -> Dict[str, float]:
-    """Compute area, perimeter and circularity from a binary mask.
-
-    If multiple contours exist, the largest by area is used.
-    """
+    # Ensure mask
     if mask is None:
-        return {"area": 0.0, "perimeter": 0.0, "circularity": 0.0}
+        # generate mask expects BGR
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        mask = generate_auto_mask_from_bgr(bgr)
+    # normalize mask to boolean
+    mask_bool = (mask > 0)
+    if mask_bool.sum() == 0:
+        # fallback to whole image
+        mask_bool = np.ones(rgb.shape[:2], dtype=bool)
 
-    m = (mask > 0).astype(np.uint8) * 255
-    contours_info = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
-    if not contours:
-        return {"area": 0.0, "perimeter": 0.0, "circularity": 0.0}
+    # HSV stats (OpenCV ranges H:0-179, S:0-255, V:0-255)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    h = hsv[:, :, 0].astype('float32')
+    s = hsv[:, :, 1].astype('float32')
+    v = hsv[:, :, 2].astype('float32')
+    h_mean = float(np.mean(h[mask_bool]))
+    s_mean = float(np.mean(s[mask_bool]))
+    v_mean = float(np.mean(v[mask_bool]))
+    h_std = float(np.std(h[mask_bool]))
+    s_std = float(np.std(s[mask_bool]))
+    v_std = float(np.std(v[mask_bool]))
 
-    c = max(contours, key=cv2.contourArea)
-    area = float(cv2.contourArea(c))
-    perimeter = float(cv2.arcLength(c, True))
-    circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
-    return {"area": area, "perimeter": perimeter, "circularity": circularity}
+    # Texture features on grayscale
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gray_masked = gray.copy()
+    gray_masked[~mask_bool] = 0
+    contrast, energy, homogeneity = _texture_props(gray_masked)
 
+    # Shape features: area, perimeter, circularity
+    area = float(int(mask_bool.sum()))
+    # perimeter: find largest contour
+    contours, _ = cv2.findContours((mask_bool.astype('uint8') * 255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    perimeter = 0.0
+    if contours:
+        # choose the largest contour by area
+        c = max(contours, key=cv2.contourArea)
+        perimeter = float(cv2.arcLength(c, True))
+    # circularity: 4*pi*area / perimeter^2
+    circularity = 0.0
+    if perimeter > 1e-6:
+        circularity = float(4.0 * np.pi * area / (perimeter ** 2))
 
-def extract_features(image: np.ndarray, mask: Optional[np.ndarray] = None, bins: int = 32, glcm_distances: List[int] = [1], glcm_angles: List[float] = [0.0], glcm_levels: int = 8) -> Tuple[np.ndarray, Dict]:
-    """Compute and return a concatenated feature vector and a details dict.
+    vec = np.array([
+        h_mean, s_mean, v_mean,
+        h_std, s_std, v_std,
+        contrast, energy, homogeneity,
+        area, perimeter, circularity
+    ], dtype='float32')
 
-    Returns (vector, details) where `vector` is a 1D numpy array and `details` contains the
-    individual components (`rgb_hist`, `hsv_hist`, `glcm`, `shape`).
-    """
-    rgb_hist = color_histogram_rgb(image, bins=bins, mask=mask)
-    hsv_hist = color_histogram_hsv(image, bins=bins, mask=mask)
-    glcm = glcm_features(image, distances=glcm_distances, angles=glcm_angles, levels=glcm_levels, mask=mask)
-    shape = shape_features(mask)
-
-    # Keep a stable order for GLCM properties
-    glcm_order = ["contrast", "dissimilarity", "homogeneity", "energy", "correlation", "ASM"]
-    glcm_vec = np.array([glcm.get(k, np.nan) for k in glcm_order], dtype=np.float32)
-    shape_vec = np.array([shape["area"], shape["perimeter"], shape["circularity"]], dtype=np.float32)
-
-    vector = np.concatenate([rgb_hist.astype(np.float32), hsv_hist.astype(np.float32), glcm_vec, shape_vec])
-    details = {"rgb_hist": rgb_hist, "hsv_hist": hsv_hist, "glcm": glcm, "shape": shape}
-    return vector, details
-
-
-__all__ = [
-    "color_histogram_rgb",
-    "color_histogram_hsv",
-    "glcm_features",
-    "shape_features",
-    "extract_features",
-]
+    details = {
+        'mask': mask,
+        'shape': {'area': area, 'perimeter': perimeter, 'circularity': circularity},
+    }
+    return vec, details

@@ -119,3 +119,9 @@ wcwidth==0.6.0
 webcolors==25.10.0
 webencodings==0.5.1
 websocket-client==1.9.0
+
+# Backend API
+fastapi==0.136.0
+uvicorn[standard]==0.23.2
+python-multipart==0.0.6
+aiofiles==23.1.0
