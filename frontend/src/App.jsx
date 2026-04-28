@@ -9,7 +9,7 @@ function Spinner() {
   )
 }
 
-function Header() {
+function Header({ darkMode, setDarkMode }) {
   return (
     <header className="header">
       <div className="brand">
@@ -25,6 +25,7 @@ function Header() {
       </div>
       <nav className="header-actions">
         <a className="link-btn" href="#" onClick={(e) => e.preventDefault()}>Docs</a>
+        <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)} aria-pressed={darkMode} aria-label="Toggle theme">{darkMode ? '🌙' : '☀️'}</button>
       </nav>
     </header>
   )
@@ -39,6 +40,10 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('plant_dark') === '1')
+  const [history, setHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('plant_history') || '[]') } catch { return [] }
+  })
   const inputRef = useRef(null)
 
   const fetchModels = () => {
@@ -51,6 +56,11 @@ export default function App() {
   useEffect(() => {
     fetchModels()
   }, [])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', !!darkMode)
+    try { localStorage.setItem('plant_dark', darkMode ? '1' : '0') } catch {}
+  }, [darkMode])
 
   useEffect(() => {
     if (!file) {
@@ -85,8 +95,25 @@ export default function App() {
     try {
       const res = await fetch('http://localhost:8000/api/predict', { method: 'POST', body: form })
       const json = await res.json()
-      if (!res.ok) setResult({ error: json?.detail || JSON.stringify(json) })
-      else setResult(json)
+      if (!res.ok) {
+        setResult({ error: json?.detail || JSON.stringify(json) })
+      } else {
+        setResult(json)
+        // record to history (most recent first)
+        try {
+          const entry = {
+            ts: new Date().toISOString(),
+            fileName: file?.name || 'upload',
+            model_type: json.model_type || modelType,
+            model_name: json.model_name || (modelType === 'ml' ? mlModel : 'dl'),
+            prediction: json.prediction || json.label || (Array.isArray(json) ? json[0] : null),
+            probability: typeof json.probability === 'number' ? json.probability : null
+          }
+          const next = [entry].concat(history).slice(0, 30)
+          setHistory(next)
+          try { localStorage.setItem('plant_history', JSON.stringify(next)) } catch {}
+        } catch (err) {}
+      }
     } catch (err) {
       setResult({ error: err.message })
     } finally {
@@ -100,7 +127,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header />
+      <Header darkMode={darkMode} setDarkMode={setDarkMode} />
 
       <div className="form-grid">
         <form className="uploader-column" onSubmit={submit}>
@@ -161,15 +188,22 @@ export default function App() {
               ) : (
                 <div>
                   <div className="result-main">
-                            <div className="prediction-badge">
-                              <span className="label">Prediction</span>
-                              <span className="prediction">{result.prediction || result.label || result[0] || '—'}</span>
-                            </div>
+                    <div className="prediction-badge">
+                      <span className="label">Prediction</span>
+                      <span className="prediction">{result.prediction || result.label || result[0] || '—'}</span>
+                    </div>
+                    <div className="meta">{result.model_type || ''} {result.model_name ? `• ${result.model_name}` : ''}</div>
                   </div>
                   {result.probability !== undefined && (
                     <div className="prob">
                       <div className="prob-bar">
-                        <div className="prob-fill" style={{width: `${Math.round(result.probability*100)}%`}} />
+                        <div
+                          className="prob-fill"
+                          style={{
+                            width: `${Math.round(result.probability*100)}%`,
+                            background: result.probability >= 0.75 ? 'linear-gradient(90deg,#10b981,#06b6d4)' : (result.probability >= 0.4 ? 'linear-gradient(90deg,#f59e0b,#f97316)' : 'linear-gradient(90deg,#ef4444,#f43f5e)')
+                          }}
+                        />
                       </div>
                       <small>{Math.round(result.probability*100)}% confidence</small>
                     </div>
@@ -182,6 +216,29 @@ export default function App() {
               )
             ) : (
               <div className="empty">No result yet. Upload an image and choose a model.</div>
+            )}
+          </div>
+          <div className="history-card">
+            <div className="history-header">
+              <h3>Recent Predictions</h3>
+              <div className="history-actions"><button className="link-btn" onClick={() => { setHistory([]); try { localStorage.removeItem('plant_history') } catch {} }}>Clear</button></div>
+            </div>
+            {history.length === 0 ? (
+              <div className="empty">No recent predictions</div>
+            ) : (
+              <ul className="history-list">
+                {history.map((h) => (
+                  <li key={h.ts} className="history-item" onClick={() => {
+                    setResult({ prediction: h.prediction, probability: h.probability, model_type: h.model_type, model_name: h.model_name })
+                  }}>
+                    <div className="h-main">
+                      <div className="h-pred">{h.prediction}</div>
+                      <div className="h-meta">{new Date(h.ts).toLocaleString()} • {h.fileName}</div>
+                    </div>
+                    <div className="h-prob">{h.probability !== null ? Math.round(h.probability*100)+'%' : '-'}</div>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>

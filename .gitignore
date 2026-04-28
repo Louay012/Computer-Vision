@@ -33,17 +33,10 @@ Thumbs.db
 .env
 .env.*
 
-# Model artifacts and checkpoints
-models/*.pt
-models/*.pth
-models/*.ckpt
-models/*.onnx
-models/*.h5
-models/*.pkl
-models/*.joblib
 
 # Experiment outputs
 results/**
+!results/models/.gitkeep
 !results/.gitkeep
 
 # Datasets and generated data
