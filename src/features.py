@@ -12,11 +12,16 @@ import numpy as np
 import cv2
 
 try:
-    from skimage.feature import greycomatrix, greycoprops
+    from skimage.feature import graycomatrix, graycoprops
     from skimage import img_as_ubyte
     _HAS_SKIMAGE = True
-except Exception:
-    _HAS_SKIMAGE = False
+except ImportError:
+    try:
+        from skimage.feature import greycomatrix as graycomatrix, greycoprops as graycoprops
+        from skimage import img_as_ubyte
+        _HAS_SKIMAGE = True
+    except Exception:
+        _HAS_SKIMAGE = False
 
 from .preprocessing import generate_auto_mask_from_bgr
 
@@ -34,10 +39,10 @@ def _texture_props(gray: np.ndarray) -> Tuple[float, float, float]:
         bins = np.linspace(0, 256, levels + 1)
         gray_q = np.digitize(gray_u8, bins) - 1
         gray_q = (gray_q * (255 // (levels - 1))).astype('uint8')
-        glcm = greycomatrix(gray_q, distances=[1], angles=[0], levels=levels, symmetric=True, normed=True)
-        contrast = float(greycoprops(glcm, 'contrast')[0, 0])
-        energy = float(greycoprops(glcm, 'energy')[0, 0])
-        homogeneity = float(greycoprops(glcm, 'homogeneity')[0, 0])
+        glcm = graycomatrix(gray_q, distances=[1], angles=[0], levels=levels, symmetric=True, normed=True)
+        contrast = float(graycoprops(glcm, 'contrast')[0, 0])
+        energy = float(graycoprops(glcm, 'energy')[0, 0])
+        homogeneity = float(graycoprops(glcm, 'homogeneity')[0, 0])
         return contrast, energy, homogeneity
     except Exception:
         # Fallback: use variance, inverse variance and normalized Laplacian energy
