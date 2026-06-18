@@ -140,6 +140,7 @@ Ouvrir http://localhost:5173 dans le navigateur.
 | PyTorch / torchvision | ResNet18 fine-tuning |
 | FastAPI | Backend API REST |
 | React 18 + Vite | Frontend web |
+<img width="1217" height="692" alt="image" src="https://github.com/user-attachments/assets/700335c8-a2e0-4385-89ea-2c9a9bf70acf" />
 
 
 
